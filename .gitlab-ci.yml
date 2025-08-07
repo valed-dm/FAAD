@@ -1,22 +1,88 @@
-# You can override the included template(s) by including variable overrides
-# SAST customization: https://docs.gitlab.com/ee/user/application_security/sast/#customizing-the-sast-settings
-# Secret Detection customization: https://docs.gitlab.com/user/application_security/secret_detection/pipeline/configure
-# Dependency Scanning customization: https://docs.gitlab.com/ee/user/application_security/dependency_scanning/#customizing-the-dependency-scanning-settings
-# Container Scanning customization: https://docs.gitlab.com/ee/user/application_security/container_scanning/#customizing-the-container-scanning-settings
-# Note that environment variables can be set in several places
-# See https://docs.gitlab.com/ee/ci/variables/#cicd-variable-precedence
-:stages:
-- test
-:sast:
-  :stage: test
-:include:
-- :template: Security/SAST.gitlab-ci.yml
+# This file defines a complete, production-ready CI/CD pipeline for the Freenet Alias Adder.
+# It runs security scans and builds a self-contained Windows executable for release.
+
 stages:
-- test
-- secret-detection
-variables:
-  SECRET_DETECTION_ENABLED: 'true'
-secret_detection:
-  stage: secret-detection
+  - security_scans
+  - build
+  - release
+
+# 1. Include the official GitLab templates for security jobs.
 include:
-- template: Security/Secret-Detection.gitlab-ci.yml
+  - template: Security/SAST.gitlab-ci.yml
+  - template: Security/Secret-Detection.gitlab-ci.yml
+
+# 2. Configure the included jobs to run in the 'security_scans' stage.
+sast:
+  stage: security_scans
+
+secret_detection:
+  stage: security_scans
+
+# 3. Define the custom job for building the Windows executable.
+#    This job will only run if the 'security_scans' stage completes successfully.
+build_windows_executable:
+  stage: build
+
+  # CRITICAL: This job must run on a Windows machine.
+  # You need to have a GitLab Runner configured on a Windows host with the 'windows' tag.
+  tags:
+    - windows
+
+  # --- Job Script ---
+  script:
+    - echo "Starting the Windows executable build process on a Windows runner..."
+
+    # Install PyInstaller and all project dependencies from requirements.txt
+    - echo "Installing dependencies..."
+    - pip install pyinstaller -r requirements.txt
+
+    # Run PyInstaller to create the single .exe file.
+    # --add-data ".env;.": This is VITAL. It bundles the .env file with the executable.
+    # --hidden-import: A safeguard for libraries that PyInstaller might miss.
+    - echo "Building the executable with PyInstaller..."
+    - pyinstaller --onefile --name FreenetAliasAdder --hidden-import=pydantic_settings --add-data ".env;." main.py
+
+    # --- Prepare Release Package ---
+    - echo "Creating the final release directory structure..."
+    - mkdir release
+    - move dist\FreenetAliasAdder.exe release\
+
+    # Create a simple start.bat for the client's convenience.
+    - echo "@echo off" > release\start.bat
+    - echo "FreenetAliasAdder.exe" >> release\start.bat
+    - echo "pause" >> release\start.bat
+
+    # Create a README file with instructions for the client.
+    - echo "Instructions for Freenet Alias Adder" > release\README.txt
+    - echo "------------------------------------" >> release\README.txt
+    - echo "" >> release\README.txt
+    - echo "1. Create a 'data' folder in this directory." >> release\README.txt
+    - echo "2. Inside the 'data' folder, create your 'input.txt', 'aliases.txt', and 'proxy.txt' files." >> release\README.txt
+    - echo "3. Double-click 'start.bat' to run the program." >> release\README.txt
+
+    - echo "Build process complete. Artifacts are being prepared."
+
+  # --- Artifacts ---
+  # This section tells GitLab to save the 'release' directory as a downloadable zip file.
+  artifacts:
+    name: "FreenetAliasAdder-Windows-v$CI_COMMIT_SHORT_SHA"
+    paths:
+      - release/
+    expire_in: 1 month
+
+# 4. (Optional but Recommended) Create a formal GitLab Release.
+#    This job takes the artifact from the build job and creates a tagged release.
+create_release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  rules:
+    # Only run this job when a new tag is pushed (e.g., v1.0, v1.1).
+    - if: $CI_COMMIT_TAG
+  script:
+    - echo "Creating a new release for tag $CI_COMMIT_TAG..."
+    - release-cli create --name "Release $CI_COMMIT_TAG" --tag-name $CI_COMMIT_TAG \
+      --description "Automated release of the Freenet Alias Adder. Download the 'FreenetAliasAdder-Windows' asset below." \
+      --assets-link "{\"name\":\"FreenetAliasAdder-Windows-v$CI_COMMIT_SHORT_SHA.zip\",\"url\":\"${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/jobs/artifacts/main/download?job=build_windows_executable\"}"
+  needs:
+    - job: build_windows_executable
+      artifacts: true
