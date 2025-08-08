@@ -1,0 +1,83 @@
+# This file defines a complete, production-ready CI/CD pipeline using GitHub Actions.
+# It runs on commit/push to the main branch and when a tag is created.
+
+name: Build and Release Windows Executable
+
+on:
+  push:
+    branches: [ main ]
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  # The first job is to build the application
+  build:
+    # CRITICAL: This specifies that the job will run on a Windows machine
+    # provided by GitHub.
+    runs-on: windows-latest
+
+    steps:
+      # Step 1: Check out the repository code so the runner has access to it.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Python. This action adds python and pip to the PATH.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      # Step 3: Install all project dependencies using pip.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      # Step 4: Create the .env file from repository secrets.
+      # IMPORTANT: You must first create CLIENT_ID and CLIENT_SECRET in your
+      # GitHub repo's Settings > Secrets and variables > Actions.
+      - name: Create .env file
+        run: |
+          echo CLIENT_ID=${{ secrets.CLIENT_ID }} >> .env
+          echo CLIENT_SECRET=${{ secrets.CLIENT_SECRET }} >> .env
+
+      # Step 5: Run PyInstaller to build the executable.
+      - name: Build with PyInstaller
+        run: pyinstaller --onefile --name FreenetAliasAdder --add-data ".env;." main.py
+
+      # Step 6: Upload the built executable as a workflow artifact.
+      # This allows the 'release' job to download and use it.
+      - name: Upload executable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-executable
+          path: dist/FreenetAliasAdder.exe
+
+  # The second job creates a GitHub Release, but only when you push a tag (e.g., v1.0).
+  release:
+    # This job will only run if the 'build' job completes successfully.
+    needs: build
+    runs-on: ubuntu-latest # A Linux runner is fine for just creating the release.
+    # This condition ensures the release job only runs when a git tag is created.
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      # Step 1: Download the executable that was built in the previous job.
+      - name: Download executable from build job
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-executable
+
+      # Step 2: Create the GitHub Release and attach the .exe as a release asset.
+      - name: Create Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # This is automatically provided by GitHub
+        with:
+          tag_name: ${{ github.ref_name }}
+          release_name: Release ${{ github.ref_name }}
+          body: |
+            Automated release of the Freenet Alias Adder.
+            Download the FreenetAliasAdder.exe file below.
+          files: FreenetAliasAdder.exe
